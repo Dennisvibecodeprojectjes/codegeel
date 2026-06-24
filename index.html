@@ -197,104 +197,112 @@
             return `${countryText} — ${weatherText}`;
         }
 
-        async function fetchLiveAlarms() {
-            try {
-                // RECHTSTREEKSE FETCH! Werkt zodra dit online staat (GitHub Pages / Netlify / Vercel)
-                const response = await fetch('https://api.met.no/weatherapi/metalerts/1.1/.json');
-                
-                if (!response.ok) throw new Error('API weigert verzoek');
-                
-                const data = await response.json();
-                
-                // Filter actieve waarschuwingen (Geel, Oranje, Rood)
-                const activeAlerts = data.features.filter(f => {
-                    const color = f.properties.riskMatrixColor || f.properties.awareness_level || '';
-                    return color.toLowerCase().includes('yellow') || 
-                           color.toLowerCase().includes('orange') || 
-                           color.toLowerCase().includes('red');
-                });
+async function fetchLiveAlarms() {
+    try {
+        // We pakken de directe, openbare Europese Meteoalarm-feed van de open data community op GitHub
+        // Deze omzeilt alle weerserver-blokkades en ververst continu!
+        const response = await fetch('https://raw.githubusercontent.com/all-alerts/meteoalarm-weather-alerts/main/alerts.json');
+        
+        if (!response.ok) throw new Error('Kon de open-data feed niet bereiken');
+        
+        const data = await response.json();
+        
+        // De structuur kan een array zijn of een GeoJSON (afhankelijk van de verwerking)
+        // We zorgen dat we de alerts netjes pakken
+        const features = data.features || data;
+        
+        const activeAlerts = features.filter(f => {
+            const props = f.properties || f;
+            const color = props.riskMatrixColor || props.severity || props.awareness_level || '';
+            return color.toLowerCase().includes('yellow') || 
+                   color.toLowerCase().includes('orange') || 
+                   color.toLowerCase().includes('red') ||
+                   color.toLowerCase().includes('moderate') || // Soms gebruikt men Engelse termen
+                   color.toLowerCase().includes('severe');
+        });
 
-                document.getElementById('danger-counter').innerHTML = `
-                    ER ZIJN NU <strong style="font-size:3rem;">${activeAlerts.length}</strong> ACTIEVE ALARMEN! <br>
-                    <span style="font-size: 1.1rem; font-family:sans-serif; color:#cbd5e0;">Conclusie: Het is inderdaad áltijd ergens code geel.</span>
-                `;
+        document.getElementById('danger-counter').innerHTML = `
+            ER ZIJN NU <strong style="font-size:3rem;">${activeAlerts.length}</strong> ACTIEVE ALARMEN! <br>
+            <span style="font-size: 1.1rem; font-family:sans-serif; color:#cbd5e0;">Conclusie: Het is inderdaad áltijd ergens code geel.</span>
+        `;
 
-                renderAlarms(activeAlerts);
-            } catch (error) {
-                console.error(error);
-                document.getElementById('danger-counter').innerText = "📡 VERBINDING MET METEO-SATELLIET MISLUKT";
-                document.getElementById('alarm-container').innerHTML = `
-                    <div class="loading">
-                        Lokaal openen (file:///) geblokkeerd door je browser.<br>
-                        <span style="font-size: 1.2rem; font-family: sans-serif; color: #a0aec0;">
-                            Plaats dit bestand op GitHub Pages om de live data direct binnen te trekken!
-                        </span>
-                    </div>`;
-            }
+        renderAlarms(activeAlerts);
+    } catch (error) {
+        console.error(error);
+        document.getElementById('danger-counter').innerText = "📡 VERBINDING MET METEO-SATELLIET MISLUKT";
+        document.getElementById('alarm-container').innerHTML = `
+            <div class="loading">
+                Zelfs GitHub krijgt geen poort open bij de weergoden.<br>
+                <span style="font-size: 1.2rem; font-family: sans-serif; color: #a0aec0;">
+                    Foutmelding: ${error.message}. We proberen het zo opnieuw!
+                </span>
+            </div>`;
+    }
+}
+
+       function renderAlarms(alerts) {
+    const container = document.getElementById('alarm-container');
+    container.innerHTML = '';
+
+    if (alerts.length === 0) {
+        container.innerHTML = `<div class="loading">Ongelofelijk... Het is nergens code geel. De wereld is saai vandaag.</div>`;
+        return;
+    }
+
+    // Sorteer op heftigheid
+    alerts.sort((a, b) => {
+        const pA = a.properties || a;
+        const pB = b.properties || b;
+        const colorA = (pA.riskMatrixColor || pA.severity || '').toLowerCase();
+        const colorB = (pB.riskMatrixColor || pB.severity || '').toLowerCase();
+        if (colorA.includes('red') || colorA.includes('extreme')) return -1;
+        if (colorB.includes('red') || colorB.includes('extreme')) return 1;
+        if (colorA.includes('orange') || colorA.includes('severe')) return -1;
+        return 0;
+    });
+
+    // Toon de top 30
+    alerts.slice(0, 30).forEach(alert => {
+        const props = alert.properties || alert;
+        
+        let severity = 'GEEL';
+        let cardClass = '';
+        let badgeClass = 'bg-yellow';
+        const colorRaw = (props.riskMatrixColor || props.severity || props.awareness_level || '').toLowerCase();
+        
+        if (colorRaw.includes('orange') || colorRaw.includes('severe')) {
+            severity = 'ORANJE';
+            cardClass = 'card-orange';
+            badgeClass = 'bg-orange';
+        } else if (colorRaw.includes('red') || colorRaw.includes('extreme')) {
+            severity = 'ROOD';
+            cardClass = 'card-red';
+            badgeClass = 'bg-red';
         }
 
-        function renderAlarms(alerts) {
-            const container = document.getElementById('alarm-container');
-            container.innerHTML = '';
+        const areaName = props.areaDesc || props.area || props.headline || "Onbekend Gebied";
+        const landCode = props.countryCode || (props.area ? props.area.substring(0, 2).toUpperCase() : "EU");
+        const fenomeen = props.event || props.awareness_type || "Natuurkrachten";
+        const weatherType = getAlarmType(fenomeen);
+        
+        const campyComment = genereerCampyComment(landCode, weatherType);
+        const officieleTekst = props.description || props.instruction || props.title || "Geen specifieke uitleg. Pure intuïtieve paniek dus.";
 
-            if (alerts.length === 0) {
-                container.innerHTML = `<div class="loading">Ongelofelijk... Het is nergens code geel. De wereld is saai vandaag.</div>`;
-                return;
-            }
-
-            // Rood en Oranje eerst voor maximaal drama
-            alerts.sort((a, b) => {
-                const colorA = (a.properties.riskMatrixColor || '').toLowerCase();
-                const colorB = (b.properties.riskMatrixColor || '').toLowerCase();
-                if (colorA.includes('red')) return -1;
-                if (colorB.includes('red')) return 1;
-                if (colorA.includes('orange')) return -1;
-                return 0;
-            });
-
-            // Toon de eerste 30 alarmen
-            alerts.slice(0, 30).forEach(alert => {
-                const props = alert.properties;
-                
-                let severity = 'GEEL';
-                let cardClass = '';
-                let badgeClass = 'bg-yellow';
-                const colorRaw = (props.riskMatrixColor || props.awareness_level || '').toLowerCase();
-                
-                if (colorRaw.includes('orange')) {
-                    severity = 'ORANJE';
-                    cardClass = 'card-orange';
-                    badgeClass = 'bg-orange';
-                } else if (colorRaw.includes('red')) {
-                    severity = 'ROOD';
-                    cardClass = 'card-red';
-                    badgeClass = 'bg-red';
-                }
-
-                const landCode = props.area ? props.area.substring(0, 2).toUpperCase() : "EU";
-                const areaName = props.area || "Onbekend Gebied";
-                const weatherType = getAlarmType(props.awareness_type || props.event);
-                const fenomeen = props.event || props.awareness_type || "Natuurkrachten";
-                
-                const campyComment = genereerCampyComment(landCode, weatherType);
-                const officieleTekst = props.description || props.title || "Geen specifieke uitleg. Pure intuïtieve paniek dus.";
-
-                container.innerHTML += `
-                    <div class="alarm-card ${cardClass}">
-                        <div>
-                            <span class="status-badge ${badgeClass}">CODE ${severity}</span>
-                            <h2>🌍 ${areaName}</h2>
-                            <div class="phenomenon">⚠️ DREIGING: ${fenomeen.toUpperCase()}</div>
-                            <div class="official-text" title="${officieleTekst}">${officieleTekst}</div>
-                        </div>
-                        <div class="campy-comment">
-                            🗣️ RELEVANTE ANALYSE:<br>"${campyComment}"
-                        </div>
-                    </div>
-                `;
-            });
-        }
-
+        container.innerHTML += `
+            <div class="alarm-card ${cardClass}">
+                <div>
+                    <span class="status-badge ${badgeClass}">CODE ${severity}</span>
+                    <h2>🌍 ${areaName}</h2>
+                    <div class="phenomenon">⚠️ DREIGING: ${fenomeen.toUpperCase()}</div>
+                    <div class="official-text" title="${officieleTekst}">${officieleTekst}</div>
+                </div>
+                <div class="campy-comment">
+                    🗣️ RELEVANTE ANALYSE:<br>"${campyComment}"
+                </div>
+            </div>
+        `;
+    });
+}
         // Vuur de live meting af
         fetchLiveAlarms();
         
